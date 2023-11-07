@@ -1,0 +1,7 @@
+elf2uf2/
+generated/
+pioasm/
+pico-sdk/
+pico_sdk_import.cmake
+spi.pio.h
+gbusb.*
