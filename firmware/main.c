@@ -56,13 +56,13 @@ enum  {
 
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
-#define URL  "tetris.stacksmashing.net"
+#define URL  "localhost:8080"
 
 const tusb_desc_webusb_url_t desc_url =
 {
   .bLength         = 3 + sizeof(URL) - 1,
   .bDescriptorType = 3, // WEBUSB URL type
-  .bScheme         = 1, // 0: http, 1: https
+  .bScheme         = 0, // 0: http, 1: https
   .url             = URL
 };
 
@@ -75,10 +75,10 @@ void webserial_task(void);
 
 /*------------- MAIN -------------*/
 
-  pio_spi_inst_t spi = {
-          .pio = pio1,
-          .sm = 0
-  };
+pio_spi_inst_t spi = {
+      .pio = pio1,
+      .sm = 0
+};
 
 
 #define PIN_SCK 0
@@ -89,23 +89,6 @@ int main(void)
 {
   uint cpha1_prog_offs = pio_add_program(spi.pio, &spi_cpha1_program);
   pio_spi_init(spi.pio, spi.sm, cpha1_prog_offs, 8, 4058.838, 1, 1, PIN_SCK, PIN_SOUT, PIN_SIN);
-
-  tusb_init();
-
-  while (1)
-  {
-    tud_task(); // tinyusb device task
-    cdc_task();
-    webserial_task();
-    led_blinking_task();
-  }
-
-  return 0;
-}
-
-int oldmain(void)
-{
-  board_init();
 
   tusb_init();
 
@@ -136,7 +119,9 @@ void echo_all(uint8_t buf[], uint32_t count)
     {
       tud_cdc_write_char(buf[i]);
 
-      if ( buf[i] == '\r' ) tud_cdc_write_char('\n');
+      if ( buf[i] == '\r' ) {
+        tud_cdc_write_char('\n');
+      }
     }
     tud_cdc_write_flush();
   }
@@ -177,65 +162,56 @@ void tud_resume_cb(void)
 // WebUSB use vendor class
 //--------------------------------------------------------------------+
 
-// Invoked when received VENDOR control request
-// See: https://github.com/hathach/tinyusb/discussions/921#discussioncomment-921308
-#if TUSB_VERSION_MINOR < 8
-bool tud_vendor_control_request_cb( uint8_t rhport, tusb_control_request_t const * request )
-{
-#else  // TUSB_VERSION_MINOR >= 8
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const * request)
 {
-    // nothing to with DATA & ACK stage
-    if (stage != CONTROL_STAGE_SETUP) return true;
-    if (request->bmRequestType_bit.type!= TUSB_REQ_TYPE_VENDOR) return true; // stall unknown request
-#endif  // TUSB_VERSION_MINOR >= 8
+  // nothing to with DATA & ACK stage
+  if (stage != CONTROL_STAGE_SETUP ) return true;
 
-  switch (request->bRequest)
-  {
-    case VENDOR_REQUEST_WEBUSB:
-      // match vendor request in BOS descriptor
-      // Get landing page url
-      return tud_control_xfer(rhport, request, (void*) &desc_url, desc_url.bLength);
+  if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR) {
+    switch (request->bRequest)
+    {
+      case VENDOR_REQUEST_WEBUSB:
+        // match vendor request in BOS descriptor
+        // Get landing page url
+        return tud_control_xfer(rhport, request, (void*) &desc_url, desc_url.bLength);
 
-    case VENDOR_REQUEST_MICROSOFT:
-      if ( request->wIndex == 7 )
-      {
-        // Get Microsoft OS 2.0 compatible descriptor
-        uint16_t total_len;
-        memcpy(&total_len, desc_ms_os_20+8, 2);
+      case VENDOR_REQUEST_MICROSOFT:
+        if ( request->wIndex == 7 )
+        {
+          // Get Microsoft OS 2.0 compatible descriptor
+          uint16_t total_len;
+          memcpy(&total_len, desc_ms_os_20+8, 2);
 
-        return tud_control_xfer(rhport, request, (void*) desc_ms_os_20, total_len);
-      }else
-      {
+          return tud_control_xfer(rhport, request, (void*) desc_ms_os_20, total_len);
+        }else
+        {
+          return false;
+        }
+
+      default:
         return false;
-      }
+    }
+  } else if (
+        request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS &&
+        request->bRequest == 0x22) {
+    // Webserial simulate the CDC_REQUEST_SET_CONTROL_LINE_STATE (0x22) to
+    // connect and disconnect.
+    web_serial_connected = (request->wValue != 0);
 
-    case 0x22:
-      // Webserial simulate the CDC_REQUEST_SET_CONTROL_LINE_STATE (0x22) to
-      // connect and disconnect.
-      web_serial_connected = (request->wValue != 0);
+    // Always lit LED if connected
+    if ( web_serial_connected ) {
+      blink_interval_ms = BLINK_ALWAYS_ON;
+    } else
+    {
+      blink_interval_ms = BLINK_MOUNTED;
+    }
 
-      // Always lit LED if connected
-      if ( web_serial_connected )
-      {
-        board_led_write(true);
-        blink_interval_ms = BLINK_ALWAYS_ON;
-
-        // tud_vendor_write_str("\r\nTinyUSB WebUSB device example\r\n");
-      }else
-      {
-        blink_interval_ms = BLINK_MOUNTED;
-      }
-
-      // response with status OK
-      return tud_control_status(rhport, request);
-
-    default:
-      // stall unknown request
-      return false;
+    // response with status OK
+    return tud_control_status(rhport, request);
   }
 
-  return true;
+  // stall unknown request
+  return false;
 }
 
 // Invoked when DATA Stage of VENDOR's request is complete
@@ -263,7 +239,7 @@ void webserial_task(void)
         echo_all(&rx, 1);
       }
       // echo back to both web serial and cdc
-      // echo_all(buf, count);
+      echo_all(buf, count);
     }
   }
 }
@@ -288,7 +264,7 @@ void cdc_task(void)
         echo_all(&rx, 1);
       }
       // echo back to both web serial and cdc
-      // echo_all(buf, count);
+      echo_all(buf, count);
     
       // uint8_t buf[64];
 
