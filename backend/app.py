@@ -1,25 +1,37 @@
 import socketio
-from flask import Flask
+from flask import Flask, render_template
+from whitenoise import WhiteNoise
 
 app = Flask(__name__)
+app.wsgi_app = WhiteNoise(app.wsgi_app, root="static/", prefix="static/")
 sio = socketio.Server()
 rooms = {}
 
 
+@app.route("/", methods=["GET"])
+def index():
+    return render_template("index.html")
+
+
 @sio.on("message", namespace="/")
 def message(sid, data):
+    """Send a message to everyone else in the room."""
     sio.emit("message", data=data, skip_sid=sid)
 
-@sio.on("left", namespace="/")
-def left(sid, data):
+
+@sio.on("leave", namespace="/")
+def leave(sid, data):
+    """Leave a room"""
     for room, clients in rooms.items():
         try:
             clients.remove(sid)
         except ValueError:
             continue
 
-@sio.on("create or join", namespace="/")
-def create_or_join(sid, data):
+
+@sio.on("join", namespace="/")
+def join(sid, data):
+    """Join a room that already exists"""
     try:
         rooms[data].append(sid)
         new_room = False
@@ -31,24 +43,6 @@ def create_or_join(sid, data):
         sio.emit("created", data)
     elif len(rooms[data]) == 2:
         sio.emit("join")
-
-
-@app.route("/", methods=["GET"])
-def index():
-    with open("index.js") as f:
-        return f"""
-        <head>
-        <style>* {{font-size: 2rem;}}</style>
-        </head>
-        <body>
-        <input id="in"></input>
-        <div id="message"></div>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js" integrity="sha512-zoJXRvW2gC8Z0Xo3lBbao5+AS3g6YWr5ztKqaicua11xHo+AvE1b0lT9ODgrHTmNUxeCw0Ry4BGRYZfXu70weg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-        <script>
-        {f.read()}
-        </script>
-        </body>
-        """
 
 
 app = socketio.Middleware(sio, app)
